@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status, Request
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.dialects.sqlite import insert
 from sqlalchemy.exc import IntegrityError
@@ -11,7 +11,8 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 @router.post("/events/ingest", status_code=status.HTTP_202_ACCEPTED)
-async def ingest_events(events: List[Dict[str, Any]], db: AsyncSession = Depends(get_db)):
+async def ingest_events(events: List[Dict[str, Any]], request: Request, db: AsyncSession = Depends(get_db)):
+    request.state.event_count = len(events)
     if len(events) > 500:
         raise HTTPException(status_code=400, detail="Batch size exceeds 500 events")
 

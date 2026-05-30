@@ -16,13 +16,21 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Store Intelligence API", lifespan=lifespan)
 
+import time
+
 # Structured Logging Middleware
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
     trace_id = str(uuid.uuid4())
     store_id = request.path_params.get("store_id", "N/A")
+    
+    start_time = time.time()
     response = await call_next(request)
-    logger.info(f"trace_id={trace_id} store_id={store_id} endpoint={request.url.path} status={response.status_code}")
+    latency_ms = round((time.time() - start_time) * 1000, 2)
+    
+    event_count = getattr(request.state, "event_count", "N/A")
+    
+    logger.info(f"trace_id={trace_id} store_id={store_id} endpoint={request.url.path} latency_ms={latency_ms} event_count={event_count} status={response.status_code}")
     return response
 
 # Graceful degradation via exception handler
