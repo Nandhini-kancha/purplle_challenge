@@ -25,12 +25,18 @@ As required, you can bring up the entire environment and run tests in 5 commands
 4. **Run the detection pipeline against the video clips:**
    *Note: Ensure your dataset is extracted and accessible.*
    ```bash
-   python pipeline/run.sh /path/to/cctv_clips_folder /path/to/store_layout.json
+   bash pipeline/run.sh /path/to/cctv_clips_folder /path/to/store_layout.json
    ```
 
 5. **Run the API tests:**
    ```bash
    pytest tests/
+   ```
+
+6. **View the Live Dashboard (Bonus):**
+   *Open a new terminal while the detection pipeline is running to see live metrics.*
+   ```bash
+   python dashboard.py
    ```
 
 ## Architecture
