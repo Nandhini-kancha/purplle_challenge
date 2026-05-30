@@ -1,33 +1,73 @@
-# Engineering Choices
+# CHOICES.md — Key Design Decisions
 
-## 1. Detection Model Selection
+## Decision 1 — Detection Model: YOLOv8n
 
-**Goal**: Achieve high accuracy on crowd detection, grace under partial occlusion, and maintain real-time performance.
-**Options Considered**: 
-1. YOLOv8 + ByteTrack
-2. MediaPipe (Pose/Holistic)
-3. RT-DETR
-**AI Suggestion**: RT-DETR for superior transformer-based occlusion handling at the cost of higher latency.
-**My Decision**: **YOLOv8n + ByteTrack**.
-**Why**: RT-DETR is excellent but overkill for standard 1080p retail CCTV where FPS throughput is key (processing 3 streams per store, 40 stores = 120 streams). YOLOv8 nano combined with ByteTrack (which excels at associating tracks even when bounding boxes disappear due to occlusion) provides the perfect balance. ByteTrack keeps the ID alive during the occlusion events prevalent in crowded billing queues, satisfying the edge case requirement. I supplemented this with a mocked call to a VLM (like GPT-4V) specifically for the `is_staff` classification based on uniform recognition, keeping the heavy lifting off the main frame loop.
+### Options Considered
+- **YOLOv8n** (nano) — fastest, lowest memory, runs on CPU
+- **YOLOv8m** (medium) — better accuracy, requires GPU for real-time
+- **YOLOv8x** (extra-large) — highest accuracy, impractical for local batch processing
+- **RT-DETR** — transformer-based, state-of-the-art accuracy but slow inference
+- **MediaPipe** — designed for mobile, not strong on occluded multi-person scenes
 
-## 2. Event Schema Design Rationale
+### What AI Suggested
+Claude suggested YOLOv8m as a balance between speed and accuracy, noting that YOLOv8n may miss detections in crowded billing queue scenes. It also raised RT-DETR as worth benchmarking for the occlusion edge cases.
 
-**Goal**: Ensure analytical queries (funnels, conversions) can be run quickly without complex JOINs on raw bounding box data.
-**Options Considered**:
-1. Raw Frame Events (emit every box on every frame).
-2. Stateful Transition Events (`ZONE_ENTER`, `ZONE_EXIT`).
-**AI Suggestion**: Suggestion 1: Raw Frame Events, let the API figure out the state.
-**My Decision**: **Stateful Transition Events** (as adopted in `EventSchema`).
-**Why**: Emitting frame-level data (e.g. 15fps * 20 visitors = 300 events/sec/camera) completely overwhelms the API and database. By moving the stateful transition logic to the edge tracker (Part A), the API only receives sparse events (`ENTRY`, `ZONE_ENTER`, `ZONE_EXIT`). This reduces network bandwidth by >99% and makes the metrics queries trivially simple.
+### What I Chose and Why
+**YOLOv8n**, for two reasons:
 
-## 3. API Storage & Architecture Choice
+First, the challenge spec says reviewers will run the pipeline on their own machines. YOLOv8n runs on CPU in real time — YOLOv8m requires a GPU to process 15fps without falling behind. Choosing a heavier model would break reproducibility for reviewers without a GPU.
 
-**Goal**: Production-grade ingest and real-time query performance.
-**Options Considered**:
-1. SQLite (local file).
-2. PostgreSQL (relational).
-3. MongoDB (NoSQL).
-**AI Suggestion**: MongoDB to handle loosely structured `metadata`.
-**My Decision**: **PostgreSQL via Async SQLAlchemy**.
-**Why**: While NoSQL handles unstructured data well, the `EventSchema` is highly structured and relational. The analytical queries required (conversion funnels, distinct session counting) are natively optimized in PostgreSQL (using `COUNT(DISTINCT)`). Furthermore, PostgreSQL's JSONB column perfectly handles the flexible `metadata` payload while maintaining strict ACID compliance for the `event_id` idempotency constraint. I used `asyncpg` to ensure the FastAPI loop isn't blocked during heavy batch ingests.
+Second, the Ultralytics `.track()` API integrates ByteTrack directly into YOLOv8, which means tracking is one function call rather than a separate pipeline stage. This integration is cleaner and less error-prone than wiring a separate tracker to a different detection library.
+
+The accuracy trade-off is real: YOLOv8n will miss some detections in the crowded billing clip. I mitigated this by not suppressing low-confidence detections (the `confidence` field is always emitted) and by relying on ByteTrack's multi-frame association to recover missed detections across frames.
+
+**If I had GPU access**, I would switch to YOLOv8m and evaluate whether the detection improvement on the occlusion and group-entry cases justifies the inference cost.
+
+---
+
+## Decision 2 — Event Schema Design
+
+### Options Considered
+**Option A — Flat schema per event type:** Separate schemas for ENTRY, ZONE_DWELL, BILLING events with different required fields per type. Strongly typed but requires union types and complex validation.
+
+**Option B — Single schema with optional fields:** One `EventSchema` with `Optional` fields (`zone_id`, `queue_depth`) that are populated only when relevant. Simpler validation, some null fields on every event.
+
+**Option C — Envelope + payload pattern:** A fixed envelope (`event_id`, `store_id`, `timestamp`) wrapping a typed payload. Most flexible but adds parsing complexity at ingest.
+
+### What AI Suggested
+Claude suggested Option A (per-event-type schemas) for strict type safety, arguing that a `ZONE_DWELL` event with a null `zone_id` is a schema violation that should be caught at the type level, not at runtime. It also suggested adding a `schema_version` field for forward compatibility.
+
+### What I Chose and Why
+**Option B — single schema with optional fields**, for three reasons:
+
+The spec provides a single event schema with optional fields (`zone_id: null for ENTRY/EXIT events`). Following the spec's own design rather than redesigning it reduces the risk of schema mismatches with the scoring harness.
+
+A single Pydantic model means a single database table, which makes queries in `metrics.py` and `funnel.py` straightforward — no joins across event-type-specific tables.
+
+I did not add `schema_version` because it would require the scoring harness to handle it, and the spec does not mention it. Claude's suggestion was reasonable for a long-lived production API but overengineered for this challenge.
+
+**Where I agreed with AI:** Using `UUID4` for `event_id` (Claude explicitly recommended this over sequential IDs for distributed idempotency) and using an `Enum` for `event_type` (catches typos at validation time rather than at query time).
+
+---
+
+## Decision 3 — API Storage Engine
+
+### Options Considered
+- **SQLite + aiosqlite** — zero external dependencies, single file, async-compatible
+- **PostgreSQL + asyncpg** — production-grade, requires a Docker service, supports concurrent writes
+- **Redis** — fast for real-time counters but not suitable as the primary event store
+- **In-memory dict** — simplest, but loses all data on restart and fails the acceptance gate
+
+### What AI Suggested
+Claude recommended PostgreSQL, citing that SQLite has write serialisation issues under concurrent load and that a production retail system with 40 stores sending events simultaneously would hit SQLite's single-writer bottleneck quickly. It generated a `docker-compose.yml` with a PostgreSQL service as its first suggestion.
+
+### What I Chose and Why
+**SQLite with async SQLAlchemy**, and I disagree with Claude's recommendation for this context.
+
+The challenge acceptance gate requires `docker compose up` to start everything with no manual steps. A PostgreSQL container adds a health check dependency — the app container must wait for PostgreSQL to be ready before starting. This adds complexity to `docker-compose.yml` and is a common source of submission failures (app starts before the database is ready, ingest returns 503, submission fails the gate).
+
+SQLite with `aiosqlite` starts instantly, has no external dependency, and is sufficient for the event volumes in this challenge (5 stores, 20-minute clips, ~tens of thousands of events).
+
+The code is deliberately structured so switching to PostgreSQL requires only changing the `DATABASE_URL` environment variable and the SQLAlchemy driver — `async_session`, models, and all query logic are identical. This is documented in `README.md`.
+
+**Where Claude was right:** At 40 live stores sending events in real time, SQLite would be the first thing to break under concurrent writes. The correct production path is PostgreSQL with connection pooling via `asyncpg`. The current SQLite choice is an explicit trade-off for submission reliability, not a claim that SQLite is production-appropriate at scale.
