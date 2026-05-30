@@ -40,11 +40,11 @@ async def get_store_metrics(store_id: str, db: AsyncSession = Depends(get_db)):
         Event.store_id == store_id,
         Event.timestamp >= start_of_day,
         Event.is_staff == False,
-        Event.event_type == 'ZONE_DWELL',
+        Event.event_type.in_(['ZONE_DWELL', 'ZONE_EXIT']),
         Event.zone_id.isnot(None)
     ).group_by(Event.zone_id)
     dwell_result = await db.execute(dwell_query)
-    avg_dwell_per_zone = {row[0]: row[1] for row in dwell_result}
+    avg_dwell_per_zone = {row[0]: float(row[1]) for row in dwell_result if row[1] is not None}
 
     # Queue depth (current)
     # Estimate from latest BILLING_QUEUE_JOIN / ABANDON or EXIT events
@@ -112,3 +112,4 @@ async def get_store_metrics(store_id: str, db: AsyncSession = Depends(get_db)):
         "queue_depth": current_queue_depth,
         "abandonment_rate": abandonment_rate
     }
+

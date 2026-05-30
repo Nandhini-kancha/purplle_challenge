@@ -3,6 +3,9 @@ from typing import Optional
 from datetime import datetime
 from enum import Enum
 
+# AI-ASSISTED: Claude suggested per-event-type schemas for strict typing.
+# I chose single schema with Optional fields to match spec and simplify queries.
+
 class EventType(str, Enum):
     ENTRY = "ENTRY"
     EXIT = "EXIT"

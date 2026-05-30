@@ -27,5 +27,10 @@ class EventEmitter:
             response.raise_for_status()
             logger.info(f"Emitted batch of {len(batch)} events successfully.")
         except Exception as e:
-            logger.error(f"Failed to emit events: {e}")
-            # Real production system would retry or push to Dead Letter Queue (DLQ)
+            logger.warning(f"Failed to emit events: {e}. Retrying once...")
+            try:
+                response = self.client.post(self.api_url, json=batch)
+                response.raise_for_status()
+                logger.info(f"Emitted batch of {len(batch)} events successfully on retry.")
+            except Exception as e2:
+                logger.error(f"Retry failed to emit events: {e2}")

@@ -16,78 +16,136 @@ class SessionTracker:
         """
         events = []
         current_time = datetime.now(timezone.utc) + timedelta(seconds=frame_idx/fps)
+        seen_v_ids = set()
 
         for box, t_id, conf in zip(boxes, track_ids, confidences):
             v_id = self.track_to_visitor.get(t_id)
+            is_staff_mock = bool(t_id % 10 == 0)
+
             if not v_id:
                 v_id = f"VIS_{uuid.uuid4().hex[:8]}"
                 self.track_to_visitor[t_id] = v_id
-                self.active_sessions[v_id] = {"seq": 0, "last_zone": None, "entered_billing": False}
+                self.active_sessions[v_id] = {
+                    "seq": 0, 
+                    "last_zone": None, 
+                    "status": "ACTIVE",
+                    "last_seen_frame": frame_idx,
+                    "zone_enter_time": current_time,
+                    "last_dwell_emit": current_time,
+                    "is_staff": is_staff_mock
+                }
 
                 # Emit ENTRY
                 self.active_sessions[v_id]["seq"] += 1
-                events.append({
-                    "event_id": str(uuid.uuid4()),
-                    "store_id": store_id,
-                    "camera_id": camera_id,
-                    "visitor_id": v_id,
-                    "event_type": "ENTRY",
-                    "timestamp": current_time.isoformat(),
-                    "zone_id": None,
-                    "dwell_ms": 0,
-                    "is_staff": False,  # Mocked VLM/Classifier staff detection
-                    "confidence": float(conf),
-                    "metadata": {
-                        "queue_depth": None,
-                        "sku_zone": None,
-                        "session_seq": self.active_sessions[v_id]["seq"]
-                    }
-                })
+                events.append(self._make_event(store_id, camera_id, v_id, "ENTRY", current_time, None, conf, self.active_sessions[v_id]["seq"], is_staff_mock))
+            
+            session = self.active_sessions[v_id]
+            seen_v_ids.add(v_id)
+            session["last_seen_frame"] = frame_idx
+            
+            if session.get("status") == "EXITED":
+                session["status"] = "ACTIVE"
+                session["seq"] += 1
+                session["zone_enter_time"] = current_time
+                session["last_dwell_emit"] = current_time
+                events.append(self._make_event(store_id, camera_id, v_id, "REENTRY", current_time, None, conf, session["seq"], session["is_staff"]))
 
-            # Mock spatial zone logic based on box center
+            # Spatial zone logic based on box center
             cx, cy = (box[0] + box[2])/2, (box[1] + box[3])/2
             current_zone = self._get_zone_for_point(cx, cy, zones)
             
-            session = self.active_sessions[v_id]
             if current_zone != session["last_zone"]:
                 if session["last_zone"]:
                     # ZONE_EXIT
                     session["seq"] += 1
-                    events.append(self._make_event(store_id, camera_id, v_id, "ZONE_EXIT", current_time, session["last_zone"], conf, session["seq"]))
+                    total_dwell = (current_time - session.get("zone_enter_time", current_time)).total_seconds() * 1000
+                    evt = self._make_event(store_id, camera_id, v_id, "ZONE_EXIT", current_time, session["last_zone"], conf, session["seq"], session["is_staff"])
+                    evt["dwell_ms"] = int(total_dwell)
+                    events.append(evt)
                     
                     if session["last_zone"] == "BILLING":
                         # BILLING_QUEUE_ABANDON
                         if v_id in self.billing_queue:
                             self.billing_queue.remove(v_id)
                         session["seq"] += 1
-                        events.append(self._make_event(store_id, camera_id, v_id, "BILLING_QUEUE_ABANDON", current_time, None, conf, session["seq"]))
+                        events.append(self._make_event(store_id, camera_id, v_id, "BILLING_QUEUE_ABANDON", current_time, None, conf, session["seq"], session["is_staff"]))
 
                 if current_zone:
                     # ZONE_ENTER
                     session["seq"] += 1
-                    events.append(self._make_event(store_id, camera_id, v_id, "ZONE_ENTER", current_time, current_zone, conf, session["seq"]))
+                    session["zone_enter_time"] = current_time
+                    session["last_dwell_emit"] = current_time
+                    events.append(self._make_event(store_id, camera_id, v_id, "ZONE_ENTER", current_time, current_zone, conf, session["seq"], session["is_staff"]))
                     
                     if current_zone == "BILLING":
                         self.billing_queue.add(v_id)
                         session["seq"] += 1
-                        evt = self._make_event(store_id, camera_id, v_id, "BILLING_QUEUE_JOIN", current_time, None, conf, session["seq"])
+                        evt = self._make_event(store_id, camera_id, v_id, "BILLING_QUEUE_JOIN", current_time, None, conf, session["seq"], session["is_staff"])
                         evt["metadata"]["queue_depth"] = len(self.billing_queue)
                         events.append(evt)
 
                 session["last_zone"] = current_zone
+            else:
+                if current_zone:
+                    # Check dwell
+                    dwell_duration = (current_time - session["last_dwell_emit"]).total_seconds()
+                    if dwell_duration >= 30:
+                        session["seq"] += 1
+                        total_dwell = (current_time - session["zone_enter_time"]).total_seconds() * 1000
+                        evt = self._make_event(store_id, camera_id, v_id, "ZONE_DWELL", current_time, current_zone, conf, session["seq"], session["is_staff"])
+                        evt["dwell_ms"] = int(total_dwell)
+                        events.append(evt)
+                        session["last_dwell_emit"] = current_time
 
-        # In a real pipeline, we'd check for missing tracks to emit EXIT and clean up
+        # Check missing tracks to emit EXIT
+        for v_id, session in self.active_sessions.items():
+            if session.get("status") == "ACTIVE" and v_id not in seen_v_ids:
+                if frame_idx - session.get("last_seen_frame", frame_idx) > 30:
+                    session["status"] = "EXITED"
+                    session["seq"] += 1
+                    events.append(self._make_event(store_id, camera_id, v_id, "EXIT", current_time, session.get("last_zone"), 1.0, session["seq"], session["is_staff"]))
+                    
+                    if session.get("last_zone"):
+                        session["seq"] += 1
+                        total_dwell = (current_time - session.get("zone_enter_time", current_time)).total_seconds() * 1000
+                        evt = self._make_event(store_id, camera_id, v_id, "ZONE_EXIT", current_time, session["last_zone"], 1.0, session["seq"], session["is_staff"])
+                        evt["dwell_ms"] = int(total_dwell)
+                        events.append(evt)
+                        if session["last_zone"] == "BILLING" and v_id in self.billing_queue:
+                            self.billing_queue.remove(v_id)
+                            session["seq"] += 1
+                            events.append(self._make_event(store_id, camera_id, v_id, "BILLING_QUEUE_ABANDON", current_time, None, 1.0, session["seq"], session["is_staff"]))
+                        session["last_zone"] = None
+
         return events
 
     def _get_zone_for_point(self, cx, cy, zones):
-        # Mock logic
-        if cx < 500:
-            return "SKINCARE"
-        elif cx > 1000:
-            return "BILLING"
-        return "MAIN_FLOOR"
+        for zone in zones:
+            polygon = zone.get("polygon", [])
+            if not polygon:
+                continue
+            
+            # Ray casting algorithm
+            n = len(polygon)
+            inside = False
+            p1x, p1y = polygon[0]
+            for i in range(n + 1):
+                p2x, p2y = polygon[i % n]
+                if cy > min(p1y, p2y):
+                    if cy <= max(p1y, p2y):
+                        if cx <= max(p1x, p2x):
+                            if p1y != p2y:
+                                xints = (cy - p1y) * (p2x - p1x) / (p2y - p1y) + p1x
+                                if p1x == p2x or cx <= xints:
+                                    inside = not inside
+                p1x, p1y = p2x, p2y
+                
+            if inside:
+                return zone.get("zone_id")
+                
+        return None
 
-    def _make_event(self, store_id, camera_id, visitor_id, evt_type, ts, zone_id, conf, seq):
+    def _make_event(self, store_id, camera_id, visitor_id, evt_type, ts, zone_id, conf, seq, is_staff=False):
         return {
             "event_id": str(uuid.uuid4()),
             "store_id": store_id,
@@ -97,7 +155,7 @@ class SessionTracker:
             "timestamp": ts.isoformat(),
             "zone_id": zone_id,
             "dwell_ms": 0,
-            "is_staff": False,
+            "is_staff": is_staff,
             "confidence": float(conf),
             "metadata": {
                 "queue_depth": None,

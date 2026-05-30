@@ -28,7 +28,7 @@ async def ingest_events(events: List[Dict[str, Any]], db: AsyncSession = Depends
             errors.append({"index": idx, "event_id": raw_event.get("event_id"), "error": str(e)})
 
     if parsed_events:
-        # Idempotent insert for postgres
+        # Idempotent insert for SQLite
         stmt = insert(Event).values([
             {
                 "event_id": str(e.event_id),

@@ -1,9 +1,10 @@
 import logging
+import uuid
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from contextlib import asynccontextmanager
 from app.database import init_db
-from app import ingestion, metrics, funnel, anomalies, health
+from app import ingestion, metrics, funnel, anomalies, health, heatmap
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -18,9 +19,10 @@ app = FastAPI(title="Store Intelligence API", lifespan=lifespan)
 # Structured Logging Middleware
 @app.middleware("http")
 async def log_requests(request: Request, call_next):
-    # Just a placeholder for extracting request metadata
+    trace_id = str(uuid.uuid4())
+    store_id = request.path_params.get("store_id", "N/A")
     response = await call_next(request)
-    logger.info(f"trace_id=TODO store_id=TODO endpoint={request.url.path} status_code={response.status_code}")
+    logger.info(f"trace_id={trace_id} store_id={store_id} endpoint={request.url.path} status={response.status_code}")
     return response
 
 # Graceful degradation via exception handler
@@ -43,3 +45,4 @@ app.include_router(metrics.router)
 app.include_router(funnel.router)
 app.include_router(anomalies.router)
 app.include_router(health.router)
+app.include_router(heatmap.router)

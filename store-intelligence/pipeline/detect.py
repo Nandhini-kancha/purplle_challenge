@@ -7,6 +7,10 @@ from pipeline.tracker import SessionTracker
 from pipeline.emit import EventEmitter
 import logging
 
+# AI-ASSISTED: Used Claude to compare YOLOv8n vs YOLOv8m vs RT-DETR
+# for retail CCTV constraints. Claude recommended YOLOv8m for accuracy
+# but I chose YOLOv8n for CPU reproducibility — see CHOICES.md
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
