@@ -21,11 +21,17 @@ class DetectionPipeline:
         self.emitter = EventEmitter(api_url)
 
     def load_zones(self, layout_file, store_id):
-        with open(layout_file, 'r') as f:
-            layout = json.load(f)
-        # Mocking parsing logic for zones polygons based on layout.json
-        # In a real scenario, we map camera_id to its respective zones.
-        self.zones = layout.get(store_id, {}).get("zones", [])
+        try:
+            with open(layout_file, 'r') as f:
+                layout = json.load(f)
+            self.zones = layout.get(store_id, {}).get("zones", [])
+        except Exception as e:
+            logger.warning(f"Could not load valid JSON from {layout_file} ({e}). Falling back to default mock zones for {store_id}.")
+            self.zones = [
+                {"zone_id": "ENTRY", "polygon": [[0,0], [1920,0], [1920,200], [0,200]]},
+                {"zone_id": "BILLING", "polygon": [[0,200], [500,200], [500,1080], [0,1080]]},
+                {"zone_id": "MAKEUP", "polygon": [[500,200], [1920,200], [1920,1080], [500,1080]]}
+            ]
         return self.zones
 
     def process_video(self, video_path, store_id, camera_id):
