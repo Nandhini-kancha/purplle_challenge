@@ -34,7 +34,7 @@ class DetectionPipeline:
             ]
         return self.zones
 
-    def process_video(self, video_path, store_id, camera_id):
+    def process_video(self, video_path, store_id, camera_id, show=False):
         cap = cv2.VideoCapture(video_path)
         fps = cap.get(cv2.CAP_PROP_FPS)
         frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -50,6 +50,12 @@ class DetectionPipeline:
             results = self.model.track(frame, persist=True, classes=[0], verbose=False) # class 0 is person
             
             if results[0].boxes.id is not None:
+                if show:
+                    annotated_frame = results[0].plot()
+                    cv2.imshow("Detection Pipeline Demo", annotated_frame)
+                    if cv2.waitKey(1) & 0xFF == ord("q"):
+                        break
+
                 boxes = results[0].boxes.xyxy.cpu().numpy()
                 track_ids = results[0].boxes.id.cpu().numpy()
                 confidences = results[0].boxes.conf.cpu().numpy()
@@ -58,7 +64,7 @@ class DetectionPipeline:
                 # to stitch tracks across cameras (cross-camera deduplication).
                 # For this challenge, we use tracker.py for trajectory analysis and event generation.
                 events = self.tracker.update(
-                    frame_idx, fps, boxes, track_ids, confidences,
+                    frame_idx, fps, frame, boxes, track_ids, confidences,
                     store_id, camera_id, self.zones
                 )
                 
@@ -76,8 +82,9 @@ if __name__ == "__main__":
     parser.add_argument("--layout", required=True)
     parser.add_argument("--store_id", required=True)
     parser.add_argument("--camera_id", required=True)
+    parser.add_argument("--show", action="store_true", help="Display the video with annotations for recording")
     args = parser.parse_args()
 
     pipeline = DetectionPipeline()
     pipeline.load_zones(args.layout, args.store_id)
-    pipeline.process_video(args.video, args.store_id, args.camera_id)
+    pipeline.process_video(args.video, args.store_id, args.camera_id, show=args.show)

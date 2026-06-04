@@ -28,7 +28,36 @@ async def ingest_events(events: List[Dict[str, Any]], request: Request, db: Asyn
         except Exception as e:
             errors.append({"index": idx, "event_id": raw_event.get("event_id"), "error": str(e)})
 
+# Simple in-memory cache for cross-camera deduplication
+recent_entries = {}
+visitor_remapping = {}
+
     if parsed_events:
+        # Cross-camera deduplication: temporally merge simultaneous entries
+        global recent_entries, visitor_remapping
+        for e in parsed_events:
+            # Apply any known remapping
+            if e.visitor_id in visitor_remapping:
+                e.visitor_id = visitor_remapping[e.visitor_id]
+
+            if e.event_type.value == "ENTRY":
+                store_entries = recent_entries.setdefault(e.store_id, [])
+                
+                # Prune old entries (> 10 seconds)
+                store_entries[:] = [x for x in store_entries if (e.timestamp - x["timestamp"]).total_seconds() < 10]
+                
+                merged = False
+                for prev_entry in store_entries:
+                    # If an entry happened within 2 seconds, assume it's the same person cross-camera
+                    if abs((e.timestamp - prev_entry["timestamp"]).total_seconds()) <= 2.0:
+                        visitor_remapping[e.visitor_id] = prev_entry["visitor_id"]
+                        e.visitor_id = prev_entry["visitor_id"]
+                        merged = True
+                        break
+                
+                if not merged:
+                    store_entries.append({"visitor_id": e.visitor_id, "timestamp": e.timestamp})
+
         # Idempotent insert for SQLite
         stmt = insert(Event).values([
             {

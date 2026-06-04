@@ -1,11 +1,9 @@
-# PROMPT: "Write pytest tests for a FastAPI endpoint POST /events/ingest 
-# that validates: idempotency by event_id, partial success on malformed 
-# events, batch size limit of 500, and returns structured errors"
+# PROMPT: "Write pytest tests for the SessionTracker logic, covering zone interactions,
+# dwell time emissions, staff exclusion, and re-entry handling."
 #
-# CHANGES MADE: 
-# - AI generated happy path only, I added edge cases for empty store
-# - Changed assertion on error format to match our actual Pydantic response
-# - Added re-entry test which AI missed entirely
+# CHANGES MADE:
+# - Refined the polygon coordinates to match our test grid.
+# - Added edge case tests for missing tracks and network retries for the emitter.
 
 import pytest
 from fastapi.testclient import TestClient

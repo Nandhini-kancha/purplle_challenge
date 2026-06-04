@@ -54,7 +54,7 @@ async def get_conversion_funnel(store_id: str, db: AsyncSession = Depends(get_db
     b_events_query = select(Event.visitor_id, Event.timestamp).where(
         Event.store_id == store_id,
         Event.timestamp >= start_of_day,
-        Event.event_type == 'BILLING_QUEUE_JOIN',
+        Event.zone_id == 'BILLING',
         Event.is_staff == False
     )
     b_events_result = await db.execute(b_events_query)

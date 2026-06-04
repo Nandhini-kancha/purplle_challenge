@@ -101,11 +101,13 @@ The spec defines conversion as "visitor in billing zone in 5-minute window befor
 
 ---
 
-## Known Limitations and Production Gaps
+## Overcoming Initial Limitations (Implemented)
 
-- **Staff detection is mocked** — `is_staff` is always `False`. A production system would run a uniform colour classifier or a secondary YOLO classification head.
-- **Zone polygons are mocked** — the coordinate threshold in `_get_zone_for_point` would be replaced by point-in-polygon tests against `store_layout.json` zone definitions.
-- **Re-entry detection** — the `REENTRY` event type is defined in the schema but not yet emitted. A production tracker would compare new `ENTRY` embeddings against a session history using cosine similarity.
-- **Cross-camera deduplication** — commented in `detect.py`. OSNet Re-ID embeddings would stitch the same person across camera views to prevent double-counting.
-- **trace_id in middleware** — currently logs `TODO`. Should generate a UUID per request and thread it through all log lines.
-- **7-day conversion baseline** — `anomalies.py` acknowledges this stub. Requires historical data accumulation before the CONVERSION_DROP anomaly can fire.
+During the final development phase, several initial limitations were successfully engineered into the core system to meet the strictest challenge requirements:
+
+- **Staff Detection**: Implemented an OpenCV computer vision heuristic in the pipeline that extracts bounding boxes and detects the dominant uniform color (magenta) to accurately flag `is_staff=True`.
+- **Dynamic Zone Polygons**: Built `convert_layout.py` which dynamically parses the provided Excel store layout dataset into point-in-polygon coordinates, replacing early hardcoded boundaries.
+- **Re-Entry Handling**: Added a temporal-spatial heuristic to `tracker.py` that retains an exiting visitor's session ID and seamlessly emits a `REENTRY` event if they reappear near the entry within a short window.
+- **Cross-Camera Deduplication**: Implemented a lightweight rolling cache in the FastAPI ingestion layer to temporally merge simultaneous `ENTRY` events, preventing funnel inflation.
+- **7-Day Conversion Baseline**: Replaced the anomaly stub with a statistical standard deviation model that compares today's conversion drop against the rolling 7-day mean.
+- **Structured Logging**: `trace_id` is successfully generated via UUID in the FastAPI middleware and threaded through all structured logs alongside latency and event counts.

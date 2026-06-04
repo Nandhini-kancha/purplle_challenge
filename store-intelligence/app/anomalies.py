@@ -68,67 +68,77 @@ async def get_active_anomalies(store_id: str, db: AsyncSession = Depends(get_db)
                 "suggested_action": f"Check camera feed for {zone} to ensure no obstructions or lighting issues."
             })
 
-    # 3. Conversion drop vs 7-day avg
+    # 3. Conversion drop vs 7-day baseline (Statistical)
     start_of_today = now.replace(hour=0, minute=0, second=0, microsecond=0)
-    seven_days_ago = start_of_today - timedelta(days=7)
-    
     transactions = get_pos_transactions(store_id)
-    today_tx = [t for t in transactions if t['timestamp'] >= start_of_today]
-    past_tx = [t for t in transactions if seven_days_ago <= t['timestamp'] < start_of_today]
     
-    today_uv_query = select(func.count(distinct(Event.visitor_id))).where(
-        Event.store_id == store_id,
-        Event.timestamp >= start_of_today,
-        Event.is_staff == False
-    )
-    today_uv = (await db.execute(today_uv_query)).scalar() or 0
-    
-    past_uv_query = select(func.count(distinct(Event.visitor_id))).where(
-        Event.store_id == store_id,
-        Event.timestamp >= seven_days_ago,
-        Event.timestamp < start_of_today,
-        Event.is_staff == False
-    )
-    past_uv = (await db.execute(past_uv_query)).scalar() or 0
-    
-    async def get_converted_visitors(tx_list, start_ts, end_ts):
+    async def get_daily_conversion(target_date):
+        next_day = target_date + timedelta(days=1)
+        day_tx = [t for t in transactions if target_date <= t['timestamp'] < next_day]
+        
+        uv_query = select(func.count(distinct(Event.visitor_id))).where(
+            Event.store_id == store_id,
+            Event.timestamp >= target_date,
+            Event.timestamp < next_day,
+            Event.is_staff == False
+        )
+        uv = (await db.execute(uv_query)).scalar() or 0
+        
+        if uv == 0: return None
+            
         billing_q = select(Event.visitor_id, Event.timestamp).where(
             Event.store_id == store_id,
-            Event.timestamp >= start_ts,
-            Event.timestamp < end_ts,
+            Event.timestamp >= target_date,
+            Event.timestamp < next_day,
             Event.zone_id == 'BILLING',
             Event.is_staff == False
         )
         b_events = (await db.execute(billing_q)).all()
         converted = set()
-        for tx in tx_list:
+        for tx in day_tx:
             tx_time = tx['timestamp']
             w_start = tx_time - timedelta(minutes=5)
             for v_id, b_time in b_events:
                 if w_start <= b_time <= tx_time:
                     converted.add(v_id)
-        return len(converted)
+                    
+        return len(converted) / uv
         
-    today_converted = await get_converted_visitors(today_tx, start_of_today, now)
-    past_converted = await get_converted_visitors(past_tx, seven_days_ago, start_of_today)
+    today_conv_rate = await get_daily_conversion(start_of_today) or 0
+    today_tx = [t for t in transactions if t['timestamp'] >= start_of_today]
     
-    today_conv_rate = today_converted / today_uv if today_uv > 0 else 0
-    past_conv_rate = past_converted / past_uv if past_uv > 0 else 0
-    
-    if past_conv_rate > 0:
-        if today_conv_rate < past_conv_rate * 0.5:
+    past_rates = []
+    for i in range(1, 8):
+        day_date = start_of_today - timedelta(days=i)
+        rate = await get_daily_conversion(day_date)
+        if rate is not None: past_rates.append(rate)
+            
+    if len(past_rates) >= 3:
+        import statistics
+        mean_rate = statistics.mean(past_rates)
+        std_dev = statistics.stdev(past_rates) if len(past_rates) > 1 else 0
+        
+        # Fire if today's rate is significantly lower than average (2 standard deviations)
+        if today_conv_rate < (mean_rate - 2 * std_dev) and today_conv_rate < 0.5 * mean_rate:
             anomalies.append({
                 "type": "CONVERSION_DROP",
                 "severity": "WARN",
-                "description": f"Conversion rate dropped to {today_conv_rate:.1%} (7-day avg: {past_conv_rate:.1%})",
-                "suggested_action": "Check billing counter efficiency and staff presence."
+                "description": f"Conversion dropped to {today_conv_rate:.1%} (7-day baseline: {mean_rate:.1%} ± {std_dev:.1%})",
+                "suggested_action": "Statistically significant drop. Check billing counter efficiency."
             })
-    elif today_conv_rate == 0 and len(today_tx) == 0 and today_uv > 20:
-        anomalies.append({
-            "type": "CONVERSION_DROP",
-            "severity": "WARN",
-            "description": "0% conversion rate despite high footfall today.",
-            "suggested_action": "Check POS systems for downtime."
-        })
+    elif today_conv_rate == 0 and len(today_tx) == 0:
+        today_uv_query = select(func.count(distinct(Event.visitor_id))).where(
+            Event.store_id == store_id,
+            Event.timestamp >= start_of_today,
+            Event.is_staff == False
+        )
+        today_uv = (await db.execute(today_uv_query)).scalar() or 0
+        if today_uv > 20:
+            anomalies.append({
+                "type": "CONVERSION_DROP",
+                "severity": "WARN",
+                "description": "0% conversion rate despite high footfall today.",
+                "suggested_action": "Check POS systems for downtime."
+            })
     
     return {"anomalies": anomalies}

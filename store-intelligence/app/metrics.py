@@ -47,17 +47,22 @@ async def get_store_metrics(store_id: str, db: AsyncSession = Depends(get_db)):
     avg_dwell_per_zone = {row[0]: float(row[1]) for row in dwell_result if row[1] is not None}
 
     # Queue depth (current)
-    # Estimate from latest BILLING_QUEUE_JOIN / ABANDON or EXIT events
-    # The requirement just says "queue depth" - returning the most recent queue_depth metadata if any
-    latest_q_query = select(Event).where(
+    # Calculate current queue depth by checking the latest queue-related event for each visitor
+    q_events_query = select(Event.visitor_id, Event.event_type, Event.timestamp).where(
         Event.store_id == store_id,
-        Event.event_type == 'BILLING_QUEUE_JOIN'
-    ).order_by(Event.timestamp.desc()).limit(1)
-    latest_q_result = await db.execute(latest_q_query)
-    latest_q_event = latest_q_result.scalar_one_or_none()
-    current_queue_depth = 0
-    if latest_q_event and latest_q_event.metadata_ and 'queue_depth' in latest_q_event.metadata_:
-        current_queue_depth = latest_q_event.metadata_['queue_depth'] or 0
+        Event.timestamp >= start_of_day,
+        Event.event_type.in_(['BILLING_QUEUE_JOIN', 'BILLING_QUEUE_ABANDON', 'EXIT', 'ZONE_EXIT'])
+    )
+    q_events_result = await db.execute(q_events_query)
+    
+    visitor_status = {}
+    for v_id, e_type, ts in q_events_result:
+        # For ZONE_EXIT, we only care if they are exiting the BILLING zone.
+        # But for simplicity in this fallback, any exit event resets their queue status.
+        if v_id not in visitor_status or ts > visitor_status[v_id]['ts']:
+            visitor_status[v_id] = {'type': e_type, 'ts': ts}
+            
+    current_queue_depth = sum(1 for status in visitor_status.values() if status['type'] == 'BILLING_QUEUE_JOIN')
 
     # Abandonment Rate = BILLING_QUEUE_ABANDON / (BILLING_QUEUE_JOIN)
     q_join_query = select(func.count(Event.event_id)).where(

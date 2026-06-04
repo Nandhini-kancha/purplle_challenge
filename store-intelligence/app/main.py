@@ -33,16 +33,20 @@ async def log_requests(request: Request, call_next):
     logger.info(f"trace_id={trace_id} store_id={store_id} endpoint={request.url.path} latency_ms={latency_ms} event_count={event_count} status={response.status_code}")
     return response
 
+from sqlalchemy.exc import OperationalError
+
 # Graceful degradation via exception handler
+@app.exception_handler(OperationalError)
+async def db_exception_handler(request: Request, exc: OperationalError):
+    logger.error(f"Database unavailable: {exc}")
+    return JSONResponse(
+        status_code=503,
+        content={"error": "Database unavailable", "details": "Service degraded"}
+    )
+
 @app.exception_handler(Exception)
 async def generic_exception_handler(request: Request, exc: Exception):
     logger.error(f"Unhandled exception: {exc}")
-    # In a real app we would differentiate DB errors (503) from internal server errors (500)
-    if "Connection refused" in str(exc) or "database" in str(exc).lower():
-        return JSONResponse(
-            status_code=503,
-            content={"error": "Database unavailable", "details": "Service degraded"}
-        )
     return JSONResponse(
         status_code=500,
         content={"error": "Internal server error"}

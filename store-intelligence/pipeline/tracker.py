@@ -1,5 +1,7 @@
 import uuid
 from datetime import datetime, timezone, timedelta
+import cv2
+import numpy as np
 
 class SessionTracker:
     def __init__(self):
@@ -7,8 +9,9 @@ class SessionTracker:
         # Simple Re-ID mock map: global track id to session visitor id
         self.track_to_visitor = {}
         self.billing_queue = set()
+        self.exited_visitors = {}
 
-    def update(self, frame_idx, fps, boxes, track_ids, confidences, store_id, camera_id, zones):
+    def update(self, frame_idx, fps, frame, boxes, track_ids, confidences, store_id, camera_id, zones):
         """
         Takes raw detections and tracking outputs to generate business events.
         Handles group entry (each has unique track_id), staff movement (mocked staff check),
@@ -20,24 +23,36 @@ class SessionTracker:
 
         for box, t_id, conf in zip(boxes, track_ids, confidences):
             v_id = self.track_to_visitor.get(t_id)
-            is_staff_mock = bool(t_id % 10 == 0)
+            is_staff_val = self._is_staff_color(frame, box)
 
             if not v_id:
-                v_id = f"VIS_{uuid.uuid4().hex[:8]}"
-                self.track_to_visitor[t_id] = v_id
-                self.active_sessions[v_id] = {
-                    "seq": 0, 
-                    "last_zone": None, 
-                    "status": "ACTIVE",
-                    "last_seen_frame": frame_idx,
-                    "zone_enter_time": current_time,
-                    "last_dwell_emit": current_time,
-                    "is_staff": is_staff_mock
-                }
+                # Check for recent exit (Re-Entry heuristic)
+                recycled_v_id = None
+                for ev_id, exit_time in list(self.exited_visitors.items()):
+                    if (current_time - exit_time).total_seconds() < 300:
+                        recycled_v_id = ev_id
+                        del self.exited_visitors[ev_id]
+                        break
 
-                # Emit ENTRY
-                self.active_sessions[v_id]["seq"] += 1
-                events.append(self._make_event(store_id, camera_id, v_id, "ENTRY", current_time, None, conf, self.active_sessions[v_id]["seq"], is_staff_mock))
+                if recycled_v_id:
+                    v_id = recycled_v_id
+                    self.track_to_visitor[t_id] = v_id
+                else:
+                    v_id = f"VIS_{uuid.uuid4().hex[:8]}"
+                    self.track_to_visitor[t_id] = v_id
+                    self.active_sessions[v_id] = {
+                        "seq": 0, 
+                        "last_zone": None, 
+                        "status": "ACTIVE",
+                        "last_seen_frame": frame_idx,
+                        "zone_enter_time": current_time,
+                        "last_dwell_emit": current_time,
+                        "is_staff": is_staff_val
+                    }
+    
+                    # Emit ENTRY
+                    self.active_sessions[v_id]["seq"] += 1
+                    events.append(self._make_event(store_id, camera_id, v_id, "ENTRY", current_time, None, conf, self.active_sessions[v_id]["seq"], is_staff_val))
             
             session = self.active_sessions[v_id]
             seen_v_ids.add(v_id)
@@ -102,6 +117,7 @@ class SessionTracker:
             if session.get("status") == "ACTIVE" and v_id not in seen_v_ids:
                 if frame_idx - session.get("last_seen_frame", frame_idx) > 30:
                     session["status"] = "EXITED"
+                    self.exited_visitors[v_id] = current_time
                     session["seq"] += 1
                     events.append(self._make_event(store_id, camera_id, v_id, "EXIT", current_time, session.get("last_zone"), 1.0, session["seq"], session["is_staff"]))
                     
@@ -144,6 +160,24 @@ class SessionTracker:
                 return zone.get("zone_id")
                 
         return None
+
+    def _is_staff_color(self, frame, box):
+        # Extract box color, check if it matches a Purplle uniform (purple/magenta)
+        x1, y1, x2, y2 = map(int, box)
+        x1, y1 = max(0, x1), max(0, y1)
+        x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
+        if x2 <= x1 or y2 <= y1: return False
+        
+        crop = frame[y1:y2, x1:x2]
+        hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
+        
+        lower_purple = np.array([130, 50, 50])
+        upper_purple = np.array([170, 255, 255])
+        
+        mask = cv2.inRange(hsv, lower_purple, upper_purple)
+        purple_ratio = cv2.countNonZero(mask) / (mask.shape[0] * mask.shape[1] + 1e-6)
+        
+        return purple_ratio > 0.1
 
     def _make_event(self, store_id, camera_id, visitor_id, evt_type, ts, zone_id, conf, seq, is_staff=False):
         return {
