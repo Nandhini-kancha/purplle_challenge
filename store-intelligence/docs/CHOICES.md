@@ -71,3 +71,16 @@ SQLite with `aiosqlite` starts instantly, has no external dependency, and is suf
 The code is deliberately structured so switching to PostgreSQL requires only changing the `DATABASE_URL` environment variable and the SQLAlchemy driver — `async_session`, models, and all query logic are identical. This is documented in `README.md`.
 
 **Where Claude was right:** At 40 live stores sending events in real time, SQLite would be the first thing to break under concurrent writes. The correct production path is PostgreSQL with connection pooling via `asyncpg`. The current SQLite choice is an explicit trade-off for submission reliability, not a claim that SQLite is production-appropriate at scale.
+
+---
+
+## Decision 4 — Staff Detection using HSV Color Analysis
+
+### Options Considered
+- **YOLO Classification Head** — requires retraining, slower inference, complex pipeline
+- **HSV Color Analysis** — requires no retraining, runs in microseconds per frame, fully explainable
+
+### What I Chose and Why
+**Staff Detection:** I implemented `_is_staff_color()` using OpenCV HSV colour analysis on the upper body crop of each bounding box. The function checks for purple/magenta (Purplle brand uniform) and dark black blazers using HSV thresholds. If >30% of the upper body matches either colour, `is_staff=True`. 
+
+AI suggested using a separate YOLO classification head — I chose colour analysis because it requires no retraining, runs in microseconds per frame, and is fully explainable.
