@@ -1,18 +1,20 @@
 import time
 import httpx
+import sys
 from rich.live import Live
 from rich.table import Table
 from rich.console import Console
 
 console = Console()
+store_id = sys.argv[1] if len(sys.argv) > 1 else "ST1008"
 
 def generate_table() -> Table:
-    table = Table(title="Live Store Intelligence Dashboard - ST1008")
+    table = Table(title=f"Live Store Intelligence Dashboard - {store_id}")
     table.add_column("Metric", style="cyan", no_wrap=True)
     table.add_column("Value", style="magenta")
 
     try:
-        res = httpx.get("http://localhost:8000/stores/ST1008/metrics")
+        res = httpx.get(f"http://localhost:8000/stores/{store_id}/metrics")
         if res.status_code == 200:
             data = res.json()
             table.add_row("Unique Visitors", str(data.get("unique_visitors", 0)))
@@ -25,7 +27,7 @@ def generate_table() -> Table:
         table.add_row("API Status", "Offline or Unreachable")
 
     try:
-        ano = httpx.get("http://localhost:8000/stores/ST1008/anomalies")
+        ano = httpx.get(f"http://localhost:8000/stores/{store_id}/anomalies")
         if ano.status_code == 200:
             data = ano.json()
             anomalies = data.get("anomalies", [])

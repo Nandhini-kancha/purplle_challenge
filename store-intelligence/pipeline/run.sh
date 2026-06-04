@@ -3,12 +3,14 @@
 
 VIDEO_DIR=$1
 LAYOUT_FILE=$2
+TARGET_STORE=$3
 
 if [ -z "$VIDEO_DIR" ] || [ -z "$LAYOUT_FILE" ]; then
-    echo "Usage: $0 <video_directory> <layout_file>"
+    echo "Usage: $0 <video_directory> <layout_file> [store_id]"
     exit 1
 fi
 
+mkdir -p dataset
 JSON_LAYOUT="dataset/store_layout.json"
 echo "Converting layout $LAYOUT_FILE to $JSON_LAYOUT..."
 python pipeline/convert_layout.py "$LAYOUT_FILE" "$JSON_LAYOUT"
@@ -18,7 +20,9 @@ LAYOUT_FILE="$JSON_LAYOUT"
 for video in "$VIDEO_DIR"/*.mp4; do
     filename=$(basename -- "$video")
     store_id=$(echo $filename | grep -o 'STORE_[A-Z]*_[0-9]*')
-    if [ -z "$store_id" ]; then
+    if [ -n "$TARGET_STORE" ]; then
+        store_id="$TARGET_STORE"
+    elif [ -z "$store_id" ]; then
         store_id="ST1008"
     fi
     camera_id=$(basename -- "$filename" .mp4)
