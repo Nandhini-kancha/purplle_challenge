@@ -162,22 +162,37 @@ class SessionTracker:
         return None
 
     def _is_staff_color(self, frame, box):
-        # Extract box color, check if it matches a Purplle uniform (purple/magenta)
+        # Extract box color, check if it matches staff uniform
         x1, y1, x2, y2 = map(int, box)
         x1, y1 = max(0, x1), max(0, y1)
         x2, y2 = min(frame.shape[1], x2), min(frame.shape[0], y2)
         if x2 <= x1 or y2 <= y1: return False
         
-        crop = frame[y1:y2, x1:x2]
+        # Focus on the upper body (blazer/shirt area)
+        y_mid = y1 + (y2 - y1) // 2
+        crop = frame[y1:y_mid, x1:x2]
+        
+        if crop.size == 0: return False
+        
         hsv = cv2.cvtColor(crop, cv2.COLOR_BGR2HSV)
         
+        # Check for original Purple/Magenta
         lower_purple = np.array([130, 50, 50])
         upper_purple = np.array([170, 255, 255])
+        mask_purple = cv2.inRange(hsv, lower_purple, upper_purple)
         
-        mask = cv2.inRange(hsv, lower_purple, upper_purple)
-        purple_ratio = cv2.countNonZero(mask) / (mask.shape[0] * mask.shape[1] + 1e-6)
+        # Check for Black Blazer (Low Value/Brightness)
+        lower_black = np.array([0, 0, 0])
+        upper_black = np.array([180, 255, 50])  # Value < 50 is very dark/black
+        mask_black = cv2.inRange(hsv, lower_black, upper_black)
         
-        return purple_ratio > 0.1
+        # Combine masks
+        mask = cv2.bitwise_or(mask_purple, mask_black)
+        
+        color_ratio = cv2.countNonZero(mask) / (mask.shape[0] * mask.shape[1] + 1e-6)
+        
+        # If more than 30% of the upper body is black or purple, flag as staff
+        return color_ratio > 0.30
 
     def _make_event(self, store_id, camera_id, visitor_id, evt_type, ts, zone_id, conf, seq, is_staff=False):
         return {
