@@ -10,6 +10,10 @@ import logging
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
+# Simple in-memory cache for cross-camera deduplication
+recent_entries = {}
+visitor_remapping = {}
+
 @router.post("/events/ingest", status_code=status.HTTP_202_ACCEPTED)
 async def ingest_events(events: List[Dict[str, Any]], request: Request, db: AsyncSession = Depends(get_db)):
     request.state.event_count = len(events)
@@ -27,10 +31,6 @@ async def ingest_events(events: List[Dict[str, Any]], request: Request, db: Asyn
             parsed_events.append(event_obj)
         except Exception as e:
             errors.append({"index": idx, "event_id": raw_event.get("event_id"), "error": str(e)})
-
-# Simple in-memory cache for cross-camera deduplication
-recent_entries = {}
-visitor_remapping = {}
 
     if parsed_events:
         # Cross-camera deduplication: temporally merge simultaneous entries
