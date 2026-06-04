@@ -37,6 +37,29 @@ class SessionTracker:
                 if recycled_v_id:
                     v_id = recycled_v_id
                     self.track_to_visitor[t_id] = v_id
+
+                    # Restore session if cleaned up
+                    if v_id not in self.active_sessions:
+                        self.active_sessions[v_id] = {
+                            "seq": 0,
+                            "last_zone": None,
+                            "status": "ACTIVE",
+                            "last_seen_frame": frame_idx,
+                            "zone_enter_time": current_time,
+                            "last_dwell_emit": current_time,
+                            "is_staff": is_staff_val
+                        }
+
+                    # Emit REENTRY immediately here
+                    self.active_sessions[v_id]["status"] = "ACTIVE"
+                    self.active_sessions[v_id]["zone_enter_time"] = current_time
+                    self.active_sessions[v_id]["last_dwell_emit"] = current_time
+                    self.active_sessions[v_id]["seq"] += 1
+                    events.append(self._make_event(
+                        store_id, camera_id, v_id, "REENTRY",
+                        current_time, None, conf,
+                        self.active_sessions[v_id]["seq"], is_staff_val
+                    ))
                 else:
                     v_id = f"VIS_{uuid.uuid4().hex[:8]}"
                     self.track_to_visitor[t_id] = v_id
@@ -58,12 +81,7 @@ class SessionTracker:
             seen_v_ids.add(v_id)
             session["last_seen_frame"] = frame_idx
             
-            if session.get("status") == "EXITED":
-                session["status"] = "ACTIVE"
-                session["seq"] += 1
-                session["zone_enter_time"] = current_time
-                session["last_dwell_emit"] = current_time
-                events.append(self._make_event(store_id, camera_id, v_id, "REENTRY", current_time, None, conf, session["seq"], session["is_staff"]))
+
 
             # Spatial zone logic based on box center
             cx, cy = (box[0] + box[2])/2, (box[1] + box[3])/2
